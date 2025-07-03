@@ -2,7 +2,8 @@ CXX := g++
 CXXFLAGS := -std=c++17 -O3 -Wall -Wextra
 LDFLAGS := 
 
-SRCS := main.cpp wolf.cpp SquareLattice.cpp
+SRC_DIR := src
+SRCS := $(SRC_DIR)/main.cpp $(SRC_DIR)/wolf.cpp $(SRC_DIR)/SquareLattice.cpp
 OBJS := $(SRCS:.cpp=.o)
 TARGET := ising_simulation
 
@@ -11,14 +12,14 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
-main.o: main.cpp wolf.h SquareLattice.h
-	$(CXX) $(CXXFLAGS) -c main.cpp
+$(SRC_DIR)/main.o: $(SRC_DIR)/main.cpp $(SRC_DIR)/wolf.h $(SRC_DIR)/SquareLattice.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-wolf.o: wolf.cpp wolf.h SquareLattice.h
-	$(CXX) $(CXXFLAGS) -c wolf.cpp
+$(SRC_DIR)/wolf.o: $(SRC_DIR)/wolf.cpp $(SRC_DIR)/wolf.h $(SRC_DIR)/SquareLattice.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-SquareLattice.o: SquareLattice.cpp SquareLattice.h
-	$(CXX) $(CXXFLAGS) -c SquareLattice.cpp
+$(SRC_DIR)/SquareLattice.o: $(SRC_DIR)/SquareLattice.cpp $(SRC_DIR)/SquareLattice.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 run: $(TARGET)
 	./$(TARGET)
