@@ -1,26 +1,24 @@
-#include "/content/ising-hpc-phase-transition/src/wolf.h"
+#include "wolf.h"
 #include <fstream>
 #include <cmath>
-#include <vector>
 #include <iomanip>
 #include <chrono>
 #include <numeric>
 #include <algorithm>
-#include <iostream>  // <-- Añade esta línea
-
+#include <sstream>
+#include <iostream>
+ 
 Wolff::Wolff(float interactionStrength, int latticeSize, float T_MIN, float T_MAX, float T_STEP, long int IT):
     lattice(interactionStrength, latticeSize),
     T_MIN(T_MIN), T_MAX(T_MAX), T_STEP(T_STEP),
     L(latticeSize), N(latticeSize * latticeSize), IT(IT),
     gen(std::random_device{}()), dis(0.0f, 1.0f)
 {
-    // Validación de parámetros
     if (L <= 0) throw std::invalid_argument("Lattice size must be positive");
     if (T_MIN <= 0.0f || T_MAX <= 0.0f) throw std::invalid_argument("Temperature must be positive");
     if (T_STEP <= 0.0f) throw std::invalid_argument("Temperature step must be positive");
     if (IT <= 0) throw std::invalid_argument("Number of iterations must be positive");
 
-    // Reservar espacio para resultados
     int expected_points = static_cast<int>((T_MAX-T_MIN)/T_STEP) + 1;
     Temperatures.reserve(expected_points);
     MagnetizationResults.reserve(expected_points);
@@ -30,16 +28,51 @@ Wolff::Wolff(float interactionStrength, int latticeSize, float T_MIN, float T_MA
     BinderCumulant.reserve(expected_points);
 }
 
-void Wolff::simulate_phase_transition() {
+Wolff::~Wolff() {
+    if (time_evolution_file.is_open()) {
+        time_evolution_file.close();
+    }
+}
+
+void Wolff::initialize_time_evolution_file(float T) {
+    if (!time_evolution_file.is_open()) {
+        std::string filename = "ising_L" + std::to_string(L) + "_T" + 
+                             std::to_string(T).substr(0, 4) + ".csv";
+        time_evolution_file.open(filename);
+        time_evolution_file << "Step,Temperature,Magnetization,Energy,LatticeConfig\n";
+        time_evolution_file << std::fixed << std::setprecision(6);
+    }
+}
+
+void Wolff::save_time_step_data(const std::vector<int>& lattice, float T, int step) {
+    initialize_time_evolution_file(T);
+    
+    float M = calculate_magnetization_per_site(lattice);
+    float E = calculate_energy_per_site(lattice);
+    
+    time_evolution_file << step << "," << T << "," << M << "," << E << ",\"";
+    
+    // Guardar configuración de red como cadena (+/-)
+    for (size_t i = 0; i < lattice.size(); ++i) {
+        time_evolution_file << (lattice[i] > 0 ? "+" : "-");
+        if (i != lattice.size() - 1) time_evolution_file << " ";
+    }
+    time_evolution_file << "\"\n";
+    time_evolution_file.flush();
+}
+
+void Wolff::simulate_phase_transition(bool save_time_evolution) {
     const int equilibration_steps = 10000 + 10*N;
     const int decorrelation_steps = N;
+    const int snapshot_interval = N;
     
-    std::cout << "Iniciando simulación para L=" << L << "\n";
-    std::cout << "Configuración:\n";
-    std::cout << " - Tamaño de red: " << L << "x" << L << " (N=" << N << ")\n";
-    std::cout << " - Rango de temperatura: [" << T_MIN << "," << T_MAX << "] con paso " << T_STEP << "\n";
-    std::cout << " - Iteraciones por temperatura: " << IT << "\n";
-    std::cout << " - Muestras efectivas: " << IT/decorrelation_steps << "\n\n";
+    std::cout << "\nIniciando simulación Ising 2D (Algoritmo Wolff)\n";
+    std::cout << "============================================\n";
+    std::cout << "Tamaño de red: " << L << "x" << L << " (" << N << " spines)\n";
+    std::cout << "Rango de temperatura: [" << T_MIN << "," << T_MAX << "] paso " << T_STEP << "\n";
+    std::cout << "Iteraciones por temperatura: " << IT << "\n";
+    std::cout << "Guardar evolución temporal: " << (save_time_evolution ? "SI" : "NO") << "\n";
+    std::cout << "============================================\n\n";
 
     int temp_steps = static_cast<int>((T_MAX - T_MIN)/T_STEP) + 1;
     
@@ -47,7 +80,12 @@ void Wolff::simulate_phase_transition() {
         float T = T_MIN + t_step * T_STEP;
         auto start_time = std::chrono::steady_clock::now();
         
-        // Equilibración
+        // Reiniciar archivo CSV para cada temperatura
+        if (time_evolution_file.is_open()) {
+            time_evolution_file.close();
+        }
+
+        // Fase de equilibración
         for(int i = 0; i < equilibration_steps; ++i) {
             update(lattice.get_lattice(), T, lattice.J);
         }
@@ -56,9 +94,15 @@ void Wolff::simulate_phase_transition() {
         float sum_M = 0.0f, sum_M2 = 0.0f, sum_M4 = 0.0f;
         float sum_E = 0.0f, sum_E2 = 0.0f;
         int samples = 0;
+        int time_step = 0;
 
         for(long i = 0; i < IT; ++i) {
             update(lattice.get_lattice(), T, lattice.J);
+            
+            if(save_time_evolution && (i % snapshot_interval == 0)) {
+                save_time_step_data(lattice.get_lattice(), T, time_step);
+                time_step++;
+            }
             
             if(i % decorrelation_steps == 0) {
                 float M = calculate_magnetization_per_site(lattice.get_lattice());
@@ -93,20 +137,24 @@ void Wolff::simulate_phase_transition() {
         // Mostrar progreso
         auto end_time = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time).count();
-        std::cout << "T=" << std::setw(6) << T 
-                  << "  M=" << std::setw(10) << avg_M 
-                  << "  χ=" << std::setw(12) << Susceptibility.back() 
-                  << "  C=" << std::setw(12) << SpecificHeat.back()
-                  << "  U=" << std::setw(10) << BinderCumulant.back()
-                  << "  time=" << elapsed << "s\n";
+        std::cout << "T = " << std::setw(5) << T 
+                  << "  |M| = " << std::setw(8) << avg_M 
+                  << "  E = " << std::setw(8) << avg_E
+                  << "  χ = " << std::setw(8) << Susceptibility.back()
+                  << "  C = " << std::setw(8) << SpecificHeat.back()
+                  << "  U = " << std::setw(8) << BinderCumulant.back()
+                  << "  [" << elapsed << "s]\n";
+        
+        if(save_time_evolution && time_evolution_file.is_open()) {
+            time_evolution_file.close();
+        }
     }
 
-    std::cout << "\nSimulación completada.\n";
+    std::cout << "\nSimulación completada exitosamente!\n";
 }
 
 float Wolff::calculate_magnetization_per_site(const std::vector<int>& lattice) const {
-    float total_spin = std::accumulate(lattice.begin(), lattice.end(), 0.0f);
-    return total_spin / N;
+    return std::accumulate(lattice.begin(), lattice.end(), 0.0f) / N;
 }
 
 float Wolff::calculate_energy_per_site(const std::vector<int>& lattice) const {
@@ -114,9 +162,10 @@ float Wolff::calculate_energy_per_site(const std::vector<int>& lattice) const {
     for(int i = 0; i < N; ++i) {
         int row = i / L;
         int col = i % L;
-        int right = row * L + (col + 1) % L;
-        int down = ((row + 1) % L) * L + col;
-        energy -= lattice[i] * (lattice[right] + lattice[down]);
+        energy -= lattice[i] * (
+            lattice[row * L + (col + 1) % L] +  // Vecino derecho
+            lattice[((row + 1) % L) * L + col]  // Vecino inferior
+        );
     }
     return energy / N;
 }
@@ -128,10 +177,10 @@ void Wolff::add_to_cluster(std::vector<int>& lattice, std::unordered_set<int>& c
         int row = i / L;
         int col = i % L;
         std::vector<int> neighbors = {
-            ((row + 1) % L) * L + col,
-            ((row - 1 + L) % L) * L + col,
-            row * L + (col + 1) % L,
-            row * L + (col - 1 + L) % L
+            ((row + 1) % L) * L + col,  // Abajo
+            ((row - 1 + L) % L) * L + col,  // Arriba
+            row * L + (col + 1) % L,  // Derecha
+            row * L + (col - 1 + L) % L   // Izquierda
         };
 
         for (int neighbor : neighbors) {
@@ -163,29 +212,24 @@ void Wolff::update(std::vector<int>& lattice, float T, float J) {
 }
 
 void Wolff::store_results_to_file() const {
-    std::string filename = "results_L" + std::to_string(L) + "_J" + 
-                          std::to_string(lattice.J).substr(0,4) + ".dat";
+    std::string filename = "ising_results_L" + std::to_string(L) + ".csv";
     std::ofstream outFile(filename);
     
     if (!outFile) {
-        throw std::runtime_error("No se pudo abrir el archivo para escritura: " + filename);
+        throw std::runtime_error("No se pudo abrir el archivo de resultados");
     }
     
-    outFile << "# Modelo de Ising 2D - Algoritmo Wolff\n";
-    outFile << "# L = " << L << ", J = " << lattice.J << "\n";
-    outFile << "# Temperatura [" << T_MIN << "," << T_MAX << "] paso " << T_STEP << "\n";
-    outFile << "# Iteraciones por T: " << IT << "\n";
-    outFile << "# Columnas: T M E χ C U\n";
+    outFile << "Temperature,Magnetization,Energy,Susceptibility,SpecificHeat,BinderCumulant\n";
     outFile << std::scientific << std::setprecision(8);
     
     for(size_t i = 0; i < Temperatures.size(); ++i) {
-        outFile << Temperatures[i] << " "
-                << MagnetizationResults[i] << " "
-                << EnergyResults[i] << " "
-                << Susceptibility[i] << " "
-                << SpecificHeat[i] << " "
+        outFile << Temperatures[i] << ","
+                << MagnetizationResults[i] << ","
+                << EnergyResults[i] << ","
+                << Susceptibility[i] << ","
+                << SpecificHeat[i] << ","
                 << BinderCumulant[i] << "\n";
     }
     
-    std::cout << "Resultados guardados en: " << filename << "\n";
+    std::cout << "\nResultados guardados en: " << filename << "\n";
 }
